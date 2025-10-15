@@ -30,7 +30,7 @@ class DataSimulator:
         np.random.seed(random_state)
     
     def generate_sample_data(self, n_samples=10000):
-        print("📊 Generating sample lead data...")
+        print("Generating sample lead data...")
         data = {
             'lead_id': range(1, n_samples + 1),
             'lead_source': np.random.choice(
@@ -67,8 +67,8 @@ class DataSimulator:
         df = pd.DataFrame(data)
         df['converted'] = self._generate_target_variable(df)
         
-        print(f"✅ Generated {len(df)} sample leads")
-        print(f"📈 Conversion rate: {df['converted'].mean():.2%}")
+        print(f"Generated {len(df)} sample leads")
+        print(f"Conversion rate: {df['converted'].mean():.2%}")
         return df
     
     def _generate_target_variable(self, df):
@@ -242,7 +242,7 @@ class LeadScoringAI:
         return roc_auc
     
     def train(self, n_samples=10000, test_size=Config.TEST_SIZE):
-        print("🚀 Training Lead Scoring Model...")
+        print("Training Lead Scoring Model...")
         
         df = self.data_simulator.generate_sample_data(n_samples)
         
@@ -282,15 +282,18 @@ class LeadScoringAI:
         if hasattr(self.model, 'feature_importances_'):
             self.plot_feature_importance(X.columns)
         
-        print("✅ Model training completed!")
+        print("Model training completed!")
         return roc_auc
     
     def predict_scores(self, lead_data):
         if not self.is_trained:
             raise ValueError("Model not trained. Please call train() first.")
         
+        # FIXED: Handle both dict and list inputs
         if isinstance(lead_data, dict):
             lead_df = pd.DataFrame([lead_data])
+        elif isinstance(lead_data, list):
+            lead_df = pd.DataFrame(lead_data)
         else:
             lead_df = lead_data.copy()
         
@@ -316,8 +319,11 @@ class LeadScoringAI:
         return categories
     
     def analyze_leads(self, lead_data):
+        # FIXED: Handle both dict and list inputs
         if isinstance(lead_data, dict):
             lead_data = pd.DataFrame([lead_data])
+        elif isinstance(lead_data, list):
+            lead_data = pd.DataFrame(lead_data)
         
         scores = self.predict_scores(lead_data)
         categories = self.categorize_leads(scores)
@@ -341,10 +347,10 @@ class LeadScoringAI:
     
     def _get_recommendation(self, category, score):
         recommendations = {
-            'Hot': f"🔥 Immediate follow-up! Call within 24 hours. Score: {score}",
-            'Warm': f"✅ Schedule follow-up this week. Nurture with targeted content. Score: {score}",
-            'Cool': f"📧 Add to email nurture sequence. Monitor engagement. Score: {score}",
-            'Cold': f"❌ Low priority. Generic newsletter only. Re-engage later. Score: {score}"
+            'Hot': f"Immediate follow-up! Call within 24 hours. Score: {score}",
+            'Warm': f"Schedule follow-up this week. Nurture with targeted content. Score: {score}",
+            'Cool': f"Add to email nurture sequence. Monitor engagement. Score: {score}",
+            'Cold': f"Low priority. Generic newsletter only. Re-engage later. Score: {score}"
         }
         return recommendations.get(category, "No recommendation available")
     
@@ -360,7 +366,7 @@ class LeadScoringAI:
         }
         
         joblib.dump(model_data, filepath)
-        print(f"✅ Model saved successfully to: {filepath}")
+        print(f"Model saved successfully to: {filepath}")
     
     def load_model(self, filepath='lead_scoring_model.pkl'):
         model_data = joblib.load(filepath)
@@ -368,10 +374,10 @@ class LeadScoringAI:
         self.feature_columns = model_data['feature_columns']
         self.scaler = model_data['scaler']
         self.is_trained = True
-        print(f"✅ Model loaded successfully from: {filepath}")
+        print(f"Model loaded successfully from: {filepath}")
 
 def main():
-    print("🎯 LEAD SCORING AI - PREDICTIVE ANALYSIS")
+    print("LEAD SCORING AI - PREDICTIVE ANALYSIS")
     print("=" * 50)
     
     # Initialize and train model
@@ -484,7 +490,7 @@ def main():
     avg_score = results['score'].mean()
     print(f"  Average Score: {avg_score:.1f}/100")
     
-    print("\n✅ LEAD SCORING AI COMPLETED SUCCESSFULLY!")
+    print("\nLEAD SCORING AI COMPLETED SUCCESSFULLY!")
 
 def demo_new_leads():
     """Demo function to show how to score new leads"""

@@ -11,7 +11,6 @@ import joblib
 import warnings
 warnings.filterwarnings('ignore')
 
-# Configuration
 class Config:
     RANDOM_STATE = 42
     TEST_SIZE = 0.2

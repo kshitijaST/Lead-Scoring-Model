@@ -1,0 +1,861 @@
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import classification_report, confusion_matrix, roc_auc_score, precision_recall_curve
+from sklearn.preprocessing import StandardScaler
+import joblib
+import warnings
+import os
+import logging
+import base64
+import asyncio
+import aiocometd
+import aiohttp
+import json
+import sys
+from simple_salesforce import Salesforce
+from datetime import datetime
+
+warnings.filterwarnings('ignore')                                               
+
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
+
+class Config:
+    RANDOM_STATE = 42
+    TEST_SIZE = 0.2
+    MODEL_TYPE = 'random_forest'
+   
+    RF_N_ESTIMATORS = 100
+    RF_MAX_DEPTH = 10
+    RF_MIN_SAMPLES_SPLIT = 20
+    RF_MIN_SAMPLES_LEAF = 10
+   
+    SCORE_THRESHOLDS = {'hot': 80, 'warm': 60, 'cool': 40, 'cold': 0}
+
+
+class SalesforceIntegrator:
+    def __init__(self):
+        self.sf = None
+        self._authenticate()
+    
+    def _authenticate(self):
+        """Authenticate to Salesforce using env vars."""
+        username = 'kshitijakapadane@03.com'
+        password = '03Sep2024'
+        security_token = '9PZPUdlPAmibrmf5rnlUCSBFG'
+        domain = 'login'
+        print(f"Username: {username}")
+        print(f"Domain: {domain}")  
+        
+        if not all([username, password, security_token]):
+            raise ValueError("Salesforce credentials missing. Set SALESFORCE_USERNAME, SALESFORCE_PASSWORD, SALESFORCE_SECURITY_TOKEN environment variables.")
+        
+        try:
+            self.sf = Salesforce(username=username, password=password, security_token=security_token, domain=domain)
+            logger.info("Authenticated to Salesforce successfully.")
+        except Exception as e:
+            logger.error(f"Authentication failed: {e}")
+            logger.warning("Continuing without Salesforce integration.")
+    
+    def fetch_leads_from_salesforce(self, limit=10):
+        """Fetch real leads from Salesforce with the specified fields."""
+        if not self.sf:
+            logger.warning("Salesforce not connected. Cannot fetch leads.")
+            return pd.DataFrame()
+            
+        try:
+            descri = self.sf.Lead.describe()
+            field_list = [field['name'] for field in descri['fields']]
+            
+            print("Available Lead fields in Salesforce:")
+            for field in field_list[:20]:  
+                print(f"  - {field}")
+            print(f"... and {len(field_list) - 20} more fields")
+            
+            query = f"""
+            SELECT 
+                CreatedDate,
+                Id,
+                Name
+            FROM Lead 
+
+            """
+            
+            print(f"Fetching {limit} leads from Salesforce...")
+            results = self.sf.query_all(query)
+            
+            if results['totalSize'] > 0:
+                print(f" Successfully fetched {results['totalSize']} leads from Salesforce!")
+                
+                leads_data = []
+                for record in results['records']:
+                    lead_info = {
+                        'Id': record.get('Id'),
+                        'Name': record.get('Name'),
+                        'CreatedDate': record.get('CreatedDate')
+                    }
+                    leads_data.append(lead_info)
+                
+                df = pd.DataFrame(leads_data)
+                
+                print("\n Fetched Salesforce Leads:")
+                print("=" * 50)
+                print(df)
+                
+                return df
+            else:
+                print(" No leads found in Salesforce.")
+                return pd.DataFrame()
+                
+        except Exception as e:
+            logger.error(f"Failed to fetch leads from Salesforce: {e}")
+            return pd.DataFrame()
+    
+    def update_lead(self, lead_id, updates):
+        """Update a single Lead record by ID."""
+        if not self.sf:
+            logger.warning("Salesforce not connected. Skipping update.")
+            return None
+            
+        try:
+            sf_updates = {
+                'AI_Score__c': str(updates.get('score')) if updates.get('score') is not None else None,
+                'AI_Category__c': str(updates.get('category')) if updates.get('category') is not None else None,
+                'AI_Priority__c': str(updates.get('priority')) if updates.get('priority') is not None else None,
+                'AI_Recommendation__c': str(updates.get('recommendation')) if updates.get('recommendation') is not None else None
+            }
+            
+            sf_updates = {k: v for k, v in sf_updates.items() if v is not None}
+            
+            lead_id_str = str(lead_id)
+            
+            result = self.sf.Lead.update(lead_id_str, sf_updates)
+            logger.info(f"Updated Lead {lead_id_str}: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"Failed to update Lead {lead_id}: {e}")
+            return None
+    
+    def attach_image_to_lead(self, lead_id, image_path, title="Lead Score Distribution"):
+        """Attach a plot image to a Lead as a ContentVersion."""
+        if not self.sf:
+            logger.warning("Salesforce not connected. Skipping image attachment.")
+            return None
+            
+        try:
+            if not os.path.exists(image_path):
+                logger.warning(f"Image file {image_path} not found.")
+                return None
+                
+            with open(image_path, 'rb') as f:
+                content = f.read()
+
+            encoded_content = base64.b64encode(content).decode('utf-8')
+            
+            cv_data = {
+                'Title': title,
+                'PathOnClient': os.path.basename(image_path),
+                'VersionData': encoded_content,
+                'FirstPublishLocationId': str(lead_id)  
+            }
+            result = self.sf.ContentVersion.create(cv_data)
+            logger.info(f"Attached image to Lead {lead_id}: {result}")
+            return result
+        except Exception as e:
+            logger.error(f"Failed to attach image to Lead {lead_id}: {e}")
+            return None
+    
+    def find_lead_by_email(self, email):
+        """Query Lead by email if ID not available."""
+        if not self.sf:
+            logger.warning("Salesforce not connected. Skipping email lookup.")
+            return None
+            
+        try:
+            query = f"SELECT Id FROM Lead WHERE Email = '{email}' LIMIT 1"
+            result = self.sf.query(query)
+            if result['records']:
+                return result['records'][0]['Id']
+            return None
+        except Exception as e:
+            logger.error(f"Failed to find Lead by email {email}: {e}")
+            return None
+
+class DataSimulator:
+    def __init__(self, random_state=Config.RANDOM_STATE):
+        self.random_state = random_state
+        np.random.seed(random_state)
+   
+    def generate_sample_data(self, n_samples=50):
+        print("Generating sample lead data...")
+        data = {
+            'lead_id': [f"{i+1}" for i in range(n_samples)],
+            'lead_source': np.random.choice(
+                ['Website', 'Email', 'Social Media', 'Referral', 'Cold Call', 'Paid Search'],
+                n_samples,
+                p=[0.3, 0.2, 0.15, 0.15, 0.1, 0.1]
+            ),
+            'company_size': np.random.choice(
+                ['Small', 'Medium', 'Large', 'Enterprise'],
+                n_samples,
+                p=[0.4, 0.3, 0.2, 0.1]
+            ),
+            'industry': np.random.choice(
+                ['Technology', 'Healthcare', 'Finance', 'Education', 'Manufacturing', 'Retail'],
+                n_samples,
+                p=[0.25, 0.2, 0.15, 0.15, 0.15, 0.1]
+            ),
+            'country': np.random.choice(
+                ['USA', 'UK', 'Canada', 'Germany', 'Australia', 'Other'],
+                n_samples,
+                p=[0.5, 0.15, 0.1, 0.1, 0.05, 0.1]
+            ),
+            'website_visits': np.random.poisson(5, n_samples),
+            'email_opens': np.random.poisson(3, n_samples),
+            'time_on_site': np.random.exponential(300, n_samples),
+            'pages_viewed': np.random.poisson(8, n_samples),
+            'form_submissions': np.random.poisson(1, n_samples),
+            'email_click_rate': np.random.beta(2, 5, n_samples),
+            'days_since_created': np.random.exponential(30, n_samples),
+            'has_demo_requested': np.random.binomial(1, 0.2, n_samples),
+            'content_downloads': np.random.poisson(0.5, n_samples),
+        }
+       
+        df = pd.DataFrame(data)
+        df['converted'] = self._generate_target_variable(df)
+       
+        print(f"Generated {len(df)} sample leads")
+        print(f"Conversion rate: {df['converted'].mean():.2%}")
+        return df
+   
+    def _generate_target_variable(self, df):
+        conversion_probability = (
+            (df['website_visits'] * 0.1) +
+            (df['email_opens'] * 0.05) +
+            (df['pages_viewed'] * 0.08) +
+            (df['form_submissions'] * 0.3) +
+            (df['email_click_rate'] * 2) +
+            (df['time_on_site'] * 0.001) +
+            (df['has_demo_requested'] * 0.4) +
+            (df['content_downloads'] * 0.2) -
+            (df['days_since_created'] * 0.01)
+        )
+       
+        industry_bonus = {
+            'Technology': 0.3, 'Finance': 0.2, 'Healthcare': 0.1,
+            'Manufacturing': 0.0, 'Education': -0.1, 'Retail': 0.0
+        }
+        conversion_probability += df['industry'].map(industry_bonus)
+       
+        source_bonus = {
+            'Referral': 0.4, 'Website': 0.2, 'Paid Search': 0.1,
+            'Email': 0.0, 'Social Media': -0.1, 'Cold Call': -0.2
+        }
+        conversion_probability += df['lead_source'].map(source_bonus)
+       
+        conversion_probability += np.random.normal(0, 0.3, len(df))
+        return (conversion_probability > conversion_probability.median()).astype(int)
+   
+    def generate_new_leads(self, n_leads=10):
+        df = self.generate_sample_data(n_leads)
+        return df.drop('converted', axis=1)
+
+class LeadScoringAI:
+    def __init__(self, model_type=Config.MODEL_TYPE):
+        self.model_type = model_type
+        self.model = None
+        self.scaler = StandardScaler()
+        self.feature_columns = None
+        self.is_trained = False
+        self.data_simulator = DataSimulator()
+   
+    def preprocess_data(self, df, is_training=True):
+        processed_df = df.copy()
+       
+        numeric_columns = ['website_visits', 'email_opens', 'time_on_site', 'pages_viewed', 
+                          'form_submissions', 'email_click_rate', 'days_since_created', 
+                          'has_demo_requested', 'content_downloads']
+        
+        for col in numeric_columns:
+            if col in processed_df.columns:
+                processed_df[col] = pd.to_numeric(processed_df[col], errors='coerce').fillna(0)
+       
+        
+        processed_df['engagement_score'] = (
+            processed_df['website_visits'] * 0.3 +
+            processed_df['email_opens'] * 0.2 +
+            processed_df['pages_viewed'] * 0.5 +
+            processed_df['content_downloads'] * 0.5
+        )
+       
+        processed_df['conversion_velocity'] = (
+            processed_df['form_submissions'] / (processed_df['days_since_created'] + 1)
+        )
+       
+        processed_df['digital_footprint'] = (
+            processed_df['website_visits'] +
+            processed_df['pages_viewed'] +
+            processed_df['form_submissions'] * 3
+        )
+       
+        
+        categorical_cols = ['lead_source', 'company_size', 'industry', 'country']
+        available_categorical_cols = [col for col in categorical_cols if col in processed_df.columns]
+        
+        if available_categorical_cols:
+            processed_df = pd.get_dummies(processed_df, columns=available_categorical_cols, drop_first=True)
+       
+        if is_training:
+            self.feature_columns = [col for col in processed_df.columns if col != 'converted']
+       
+        if not is_training and self.feature_columns is not None:
+            
+            for col in self.feature_columns:
+                if col not in processed_df.columns:
+                    processed_df[col] = 0
+            
+            processed_df = processed_df[self.feature_columns]
+       
+        return processed_df
+   
+    def plot_feature_importance(self, feature_names, top_n=15):
+        if hasattr(self.model, 'feature_importances_'):
+            importance = self.model.feature_importances_
+        else:
+            importance = np.abs(self.model.coef_[0])
+       
+        indices = np.argsort(importance)[::-1]
+       
+        plt.figure(figsize=(12, 8))
+        plt.title("Feature Importance - Lead Scoring Model", fontsize=16, fontweight='bold')
+        bars = plt.barh(range(min(top_n, len(indices))),
+                       importance[indices][:top_n][::-1],
+                       color='skyblue', edgecolor='black')
+       
+        plt.yticks(range(min(top_n, len(indices))),
+                  [feature_names[i] for i in indices[:top_n]][::-1], fontsize=12)
+        plt.xlabel('Importance Score', fontsize=12)
+        plt.grid(axis='x', alpha=0.3)
+       
+        for i, bar in enumerate(bars):
+            width = bar.get_width()
+            plt.text(width + 0.001, bar.get_y() + bar.get_height()/2,
+                    f'{width:.3f}', ha='left', va='center', fontsize=10)
+       
+        plt.tight_layout()
+        plt.savefig('feature_importance.png')
+        plt.show()
+   
+    def plot_lead_score_distribution(self, scores):
+        thresholds = Config.SCORE_THRESHOLDS
+       
+        plt.figure(figsize=(12, 6))
+        colors = ['red', 'orange', 'lightblue', 'darkblue']
+       
+        n, bins, patches = plt.hist(scores, bins=50, alpha=0.7, edgecolor='black')
+       
+        for i, (patch, left_bin, right_bin) in enumerate(zip(patches, bins[:-1], bins[1:])):
+            if right_bin <= thresholds['cool']:
+                patch.set_facecolor(colors[3])
+            elif right_bin <= thresholds['warm']:
+                patch.set_facecolor(colors[2])
+            elif right_bin <= thresholds['hot']:
+                patch.set_facecolor(colors[1])
+            else:
+                patch.set_facecolor(colors[0])
+       
+        plt.title('Lead Score Distribution', fontsize=16, fontweight='bold')
+        plt.xlabel('Lead Score', fontsize=12)
+        plt.ylabel('Number of Leads', fontsize=12)
+        plt.grid(True, alpha=0.3)
+       
+        for threshold_name, threshold_value in thresholds.items():
+            if threshold_value > 0:
+                plt.axvline(x=threshold_value, color='black', linestyle='--', alpha=0.7)
+                plt.text(threshold_value + 1, plt.ylim()[1] * 0.9,
+                        f'{threshold_name.title()}: {threshold_value}',
+                        rotation=90, verticalalignment='top')
+       
+        plt.tight_layout()
+        plt.savefig('lead_score_distribution.png')
+        plt.show()
+   
+    def evaluate_model_performance(self, y_true, y_pred, y_pred_proba):
+        print("=" * 60)
+        print("LEAD SCORING MODEL EVALUATION")
+        print("=" * 60)
+       
+        roc_auc = roc_auc_score(y_true, y_pred_proba)
+        print(f"ROC-AUC Score: {roc_auc:.4f}")
+       
+        print("\nClassification Report:")
+        print(classification_report(y_true, y_pred))
+       
+        plt.figure(figsize=(8, 6))
+        cm = confusion_matrix(y_true, y_pred)
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues',
+                   xticklabels=['Not Converted', 'Converted'],
+                   yticklabels=['Not Converted', 'Converted'])
+        plt.title('Confusion Matrix', fontsize=14, fontweight='bold')
+        plt.ylabel('Actual')
+        plt.xlabel('Predicted')
+        plt.savefig('confusion_matrix.png')
+        plt.show()
+       
+        precision, recall, _ = precision_recall_curve(y_true, y_pred_proba)
+        plt.figure(figsize=(8, 6))
+        plt.plot(recall, precision, marker='.')
+        plt.title('Precision-Recall Curve')
+        plt.xlabel('Recall')
+        plt.ylabel('Precision')
+        plt.grid(True, alpha=0.3)
+        plt.savefig('precision_recall.png')
+        plt.show()
+       
+        return roc_auc
+   
+    def train(self, n_samples=1000, test_size=Config.TEST_SIZE):  
+        print("Training Lead Scoring Model...")
+       
+        df = self.data_simulator.generate_sample_data(n_samples)
+       
+        processed_data = self.preprocess_data(df)
+        X = processed_data.drop('converted', axis=1)
+        y = processed_data['converted']
+       
+        X_train, X_test, y_train, y_test = train_test_split(
+            X, y, test_size=test_size, random_state=Config.RANDOM_STATE, stratify=y
+        )
+       
+        X_train_values = X_train.values
+        X_test_values = X_test.values
+       
+        X_train_scaled = self.scaler.fit_transform(X_train_values)
+        X_test_scaled = self.scaler.transform(X_test_values)
+       
+        if self.model_type == 'random_forest':
+            self.model = RandomForestClassifier(
+                n_estimators=Config.RF_N_ESTIMATORS,
+                max_depth=Config.RF_MAX_DEPTH,
+                min_samples_split=Config.RF_MIN_SAMPLES_SPLIT,
+                min_samples_leaf=Config.RF_MIN_SAMPLES_LEAF,
+                random_state=Config.RANDOM_STATE
+            )
+        elif self.model_type == 'logistic_regression':
+            self.model = LogisticRegression(random_state=Config.RANDOM_STATE, max_iter=1000)
+        else:
+            raise ValueError(f"Unsupported model type: {self.model_type}")
+       
+        self.model.fit(X_train_scaled, y_train)
+        self.is_trained = True
+       
+        y_pred = self.model.predict(X_test_scaled)
+        y_pred_proba = self.model.predict_proba(X_test_scaled)[:, 1]
+       
+        roc_auc = self.evaluate_model_performance(y_test, y_pred, y_pred_proba)
+       
+        if hasattr(self.model, 'feature_importances_'):
+            self.plot_feature_importance(X.columns)
+       
+        print("Model training completed!")
+        return roc_auc
+   
+    def predict_scores(self, lead_data):
+        if not self.is_trained:
+            raise ValueError("Model not trained. Please call train() first.")
+       
+        if isinstance(lead_data, dict):
+            lead_df = pd.DataFrame([lead_data])
+        elif isinstance(lead_data, list):
+            lead_df = pd.DataFrame(lead_data)
+        else:
+            lead_df = lead_data.copy()
+       
+        lead_processed = self.preprocess_data(lead_df, is_training=False)
+        
+        lead_processed_values = lead_processed.values
+        
+        lead_scaled = self.scaler.transform(lead_processed_values)
+        conversion_probabilities = self.model.predict_proba(lead_scaled)[:, 1]
+        lead_scores = (conversion_probabilities * 100).astype(int)
+       
+        return lead_scores
+   
+    def categorize_leads(self, scores):
+        thresholds = Config.SCORE_THRESHOLDS
+        categories = []
+        for score in scores:
+            if score >= thresholds['hot']:
+                categories.append("Hot")
+            elif score >= thresholds['warm']:
+                categories.append("Warm")
+            elif score >= thresholds['cool']:
+                categories.append("Cool")
+            else:
+                categories.append("Cold")
+        return categories
+   
+    def analyze_leads(self, lead_data):
+        if isinstance(lead_data, dict):
+            lead_data = pd.DataFrame([lead_data])
+        elif isinstance(lead_data, list):
+            lead_data = pd.DataFrame(lead_data)
+       
+        scores = self.predict_scores(lead_data)
+        categories = self.categorize_leads(scores)
+       
+        results = []
+        for i, (score, category) in enumerate(zip(scores, categories)):
+            
+            lead_id = lead_data.iloc[i].get('Id') or lead_data.iloc[i].get('id') or lead_data.iloc[i].get('lead_id') or f"lead_{i+1}"
+            result = {
+                'lead_id': str(lead_id),  
+                'score': int(score),      
+                'category': str(category),
+                'priority': self._get_priority_level(category),
+                'recommendation': self._get_recommendation(category, score)
+            }
+            results.append(result)
+       
+        return pd.DataFrame(results)
+   
+    def _get_priority_level(self, category):
+        priority_map = {'Hot': 'High', 'Warm': 'Medium', 'Cool': 'Low', 'Cold': 'Very Low'}
+        return priority_map.get(category, 'Unknown')
+   
+    def _get_recommendation(self, category, score):
+        recommendations = {
+            'Hot': f"Immediate follow-up! Call within 24 hours. Score: {score}",
+            'Warm': f"Schedule follow-up this week. Nurture with targeted content. Score: {score}",
+            'Cool': f"Add to email nurture sequence. Monitor engagement. Score: {score}",
+            'Cold': f"Low priority. Generic newsletter only. Re-engage later. Score: {score}"
+        }
+        return recommendations.get(category, "No recommendation available")
+   
+    def save_model(self, filepath='lead_scoring_model.pkl'):
+        if not self.is_trained:
+            raise ValueError("No trained model to save.")
+       
+        model_data = {
+            'model': self.model,
+            'feature_columns': self.feature_columns,
+            'scaler': self.scaler,
+            'config': {'thresholds': Config.SCORE_THRESHOLDS, 'model_type': Config.MODEL_TYPE}
+        }
+       
+        joblib.dump(model_data, filepath)
+        print(f"Model saved successfully to: {filepath}")
+   
+    def load_model(self, filepath='lead_scoring_model.pkl'):
+        model_data = joblib.load(filepath)
+        self.model = model_data['model']
+        self.feature_columns = model_data['feature_columns']
+        self.scaler = model_data['scaler']
+        self.is_trained = True
+        print(f"Model loaded successfully from: {filepath}")
+
+class SalesforceEventSubscriber:
+    def __init__(self, sf_integrator):
+        self.sf_integrator = sf_integrator
+        self.client = None
+        self.lead_scoring_ai = None
+        
+    def set_ai_model(self, ai_model):
+        """Set the AI model for lead scoring"""
+        self.lead_scoring_ai = ai_model
+    
+    async def connect(self):
+        """Connect to Salesforce Streaming API"""
+        try:
+            # Get session details from existing Salesforce connection
+            session_id = self.sf_integrator.sf.session_id
+            instance_url = self.sf_integrator.sf.sf_instance
+            
+            # Configure aiocometd client
+            transport = aiocometd.Transport(aiohttp.Transport)
+            self.client = aiocometd.Client(transport=transport)
+            
+            # Connect to Salesforce Streaming API
+            cometd_url = f"https://{instance_url}/cometd/53.0/"
+            await self.client.connect(
+                cometd_url,
+                auth=aiocometd.Auth(auth_type="bearer", token=session_id)
+            )
+            
+            logger.info(" Connected to Salesforce Streaming API")
+            return True
+            
+        except Exception as e:
+            logger.error(f" Connection failed: {e}")
+            return False
+    
+    async def subscribe_to_lead_events(self):
+        """Subscribe to Lead Created events"""
+        try:
+            channel = "/event/Lead_Created_Event__e"
+            await self.client.subscribe(channel, self.handle_lead_created)
+            logger.info(f"Subscribed to: {channel}")
+            return True
+        except Exception as e:
+            logger.error(f" Subscription failed: {e}")
+            return False
+    
+    async def handle_lead_created(self, message):
+        """Handle new lead creation events"""
+        try:
+            event_data = message['data']
+            logger.info(" Received new lead event from Salesforce")
+            
+            # Extract lead information from event
+            lead_id = event_data['LeadId__c']
+            lead_name = event_data['LeadName__c']
+            email = event_data['Email__c']
+            company = event_data['Company__c']
+            
+            logger.info(f" Processing new lead: {lead_name} ({lead_id})")
+            
+            # Process the new lead
+            await self.process_new_lead(lead_id, lead_name, email, company)
+            
+        except Exception as e:
+            logger.error(f" Error processing lead event: {e}")
+    
+    async def process_new_lead(self, lead_id, lead_name, email, company):
+        """Process and score a new lead"""
+        try:
+            # Generate sample engagement data for the new lead
+            lead_data = self.generate_lead_engagement_data(lead_id, lead_name, email, company)
+            
+            # Score the lead using your existing AI model
+            results = self.lead_scoring_ai.analyze_leads([lead_data])
+            
+            # Update Salesforce with the scores
+            for _, result in results.iterrows():
+                update_data = {
+                    'score': result['score'],
+                    'category': result['category'],
+                    'priority': result['priority'],
+                    'recommendation': result['recommendation']
+                }
+                
+                # Update lead in Salesforce
+                self.sf_integrator.update_lead(lead_id, update_data)
+                logger.info(f" Updated lead {lead_name} with score: {result['score']}")
+                
+                # Generate and save visualization
+                self.generate_lead_visualization(result['score'], lead_id, lead_name)
+                
+        except Exception as e:
+            logger.error(f" Error processing lead {lead_id}: {e}")
+    
+    def generate_lead_engagement_data(self, lead_id, lead_name, email, company):
+        """Generate realistic engagement data for new lead"""
+        return {
+            'Id': lead_id,
+            'Name': lead_name,
+            'Email': email,
+            'Company': company,
+            'lead_source': np.random.choice(['Website', 'Email', 'Social Media', 'Referral', 'Paid Search']),
+            'company_size': np.random.choice(['Small', 'Medium', 'Large', 'Enterprise'], p=[0.4, 0.3, 0.2, 0.1]),
+            'industry': np.random.choice(['Technology', 'Healthcare', 'Finance', 'Education', 'Manufacturing', 'Retail']),
+            'country': 'USA',
+            'website_visits': np.random.randint(1, 25),
+            'email_opens': np.random.randint(1, 20),
+            'time_on_site': np.random.randint(100, 1200),
+            'pages_viewed': np.random.randint(5, 30),
+            'form_submissions': np.random.randint(0, 5),
+            'email_click_rate': np.random.uniform(0.1, 0.9),
+            'days_since_created': np.random.randint(0, 7),
+            'has_demo_requested': np.random.choice([0, 1], p=[0.7, 0.3]),
+            'content_downloads': np.random.randint(0, 4)
+        }
+    
+    def generate_lead_visualization(self, score, lead_id, lead_name):
+        """Generate visualization for individual lead"""
+        try:
+            # Create a gauge chart for the lead score
+            categories = ['Cold', 'Cool', 'Warm', 'Hot']
+            thresholds = [0, 40, 60, 80, 100]
+            colors = ['darkblue', 'lightblue', 'orange', 'red']
+            
+            # Find which category the score falls into
+            category_index = 0
+            for i, threshold in enumerate(thresholds[1:]):
+                if score >= threshold:
+                    category_index = i
+            
+            # Create gauge visualization
+            fig, ax = plt.subplots(figsize=(8, 4))
+            ax.barh([0], [score], color=colors[category_index], height=0.5)
+            ax.set_xlim(0, 100)
+            ax.set_xlabel('Lead Score')
+            ax.set_title(f'Lead Score: {lead_name}\nScore: {score}/100 - {categories[category_index]}')
+            
+            # Add threshold lines
+            for threshold in thresholds[1:-1]:
+                ax.axvline(x=threshold, color='gray', linestyle='--', alpha=0.7)
+            
+            plt.tight_layout()
+            plt.savefig(f'lead_score_{lead_id}.png', dpi=150, bbox_inches='tight')
+            plt.close()
+            
+            logger.info(f" Generated visualization for lead {lead_id}")
+            
+        except Exception as e:
+            logger.error(f" Error generating visualization: {e}")
+    
+    async def start_listening(self):
+        """Start listening for Salesforce events"""
+        try:
+            # Connect to Salesforce
+            if not await self.connect():
+                return False
+            
+            # Subscribe to lead events
+            if not await self.subscribe_to_lead_events():
+                return False
+            
+            logger.info(" Event listener started. Waiting for new leads...")
+            
+            # Keep the connection alive
+            while True:
+                await asyncio.sleep(30)
+                
+        except KeyboardInterrupt:
+            logger.info(" Shutting down event listener...")
+        except Exception as e:
+            logger.error(f" Event listener error: {e}")
+    
+    async def disconnect(self):
+        """Disconnect from Salesforce"""
+        if self.client:
+            await self.client.disconnect()
+            logger.info("🔌 Disconnected from Salesforce")
+
+def main_automated():
+    """Automated version that listens for new leads"""
+    print(" LEAD SCORING AI - AUTOMATED REAL-TIME PROCESSING")
+    print("=" * 70)
+    
+    # Initialize Salesforce integration
+    print("\n1. CONNECTING TO SALESFORCE...")
+    sf_integrator = SalesforceIntegrator()
+    
+    # Initialize AI model
+    print("\n2. INITIALIZING AI MODEL...")
+    ai_model = LeadScoringAI()
+    
+    # Train or load the model
+    model_file = 'lead_scoring_model.pkl'
+    if os.path.exists(model_file):
+        ai_model.load_model(model_file)
+        print("   Model loaded from file")
+    else:
+        print("    Training new model...")
+        ai_model.train(n_samples=1000)
+        ai_model.save_model(model_file)
+        print("    Model trained and saved")
+    
+    # Initialize event subscriber
+    print("\n3. STARTING REAL-TIME EVENT LISTENER...")
+    event_subscriber = SalesforceEventSubscriber(sf_integrator)
+    event_subscriber.set_ai_model(ai_model)
+    
+    # Start listening for events
+    print("    Listening for new leads in Salesforce...")
+    print("    The system will automatically score new leads in real-time!")
+    print("   Press Ctrl+C to stop\n")
+    
+    # Run the event listener
+    asyncio.run(event_subscriber.start_listening())
+
+def main_manual():
+    """Original manual version (for testing)"""
+    print("LEAD SCORING AI - MANUAL BATCH PROCESSING")
+    print("=" * 70)
+    
+    # Your original main function code here
+    sf_integrator = SalesforceIntegrator()
+    real_leads_df = sf_integrator.fetch_leads_from_salesforce(limit=5)
+    
+    if real_leads_df.empty:
+        print(" No real leads fetched from Salesforce. Using sample data instead.")
+        sample_leads = [
+            {
+                'id': '00Q5e000001A1B2C',
+                'email': 'lead1@example.com',
+                'lead_source': 'Website',
+                'company_size': 'Medium',
+                'industry': 'Technology',
+                'country': 'USA',  
+                'website_visits': 15,
+                'email_opens': 12,
+                'time_on_site': 600,
+                'pages_viewed': 20,
+                'form_submissions': 3,
+                'email_click_rate': 0.6,
+                'days_since_created': 5,
+                'has_demo_requested': 1,
+                'content_downloads': 2
+            }
+        ]
+        leads_to_analyze = sample_leads
+    else:
+        print(" Using real Salesforce leads for analysis!")
+        leads_to_analyze = []
+        for _, row in real_leads_df.iterrows():
+            lead_data = {
+                'Id': row['Id'],
+                'Name': row['Name'],
+                'CreatedDate': row['CreatedDate'],
+                'lead_source': np.random.choice(['Website', 'Email', 'Social Media', 'Referral']),
+                'company_size': np.random.choice(['Small', 'Medium', 'Large']),
+                'industry': np.random.choice(['Technology', 'Finance', 'Healthcare']),
+                'country': 'USA',
+                'website_visits': np.random.randint(1, 20),
+                'email_opens': np.random.randint(1, 15),
+                'time_on_site': np.random.randint(100, 600),
+                'pages_viewed': np.random.randint(5, 25),
+                'form_submissions': np.random.randint(0, 4),
+                'email_click_rate': np.random.uniform(0.1, 0.8),
+                'days_since_created': np.random.randint(1, 30),
+                'has_demo_requested': np.random.randint(0, 2),
+                'content_downloads': np.random.randint(0, 3)
+            }
+            leads_to_analyze.append(lead_data)
+    
+    ai_model = LeadScoringAI()
+    ai_model.train(n_samples=1000)
+    results = ai_model.analyze_leads(leads_to_analyze)
+    
+    # Display results
+    print("\nLEAD SCORING RESULTS:")
+    print("=" * 80)
+    for _, result in results.iterrows():
+        print(f"Lead ID: {result['lead_id']}")
+        print(f" Score: {result['score']}/100")
+        print(f" Category: {result['category']}")
+        print(f" Priority: {result['priority']}")
+        print(f" Action: {result['recommendation']}")
+        print("-" * 50)
+    
+    # Update Salesforce
+    if sf_integrator.sf and not real_leads_df.empty:
+        for _, row in results.iterrows():
+            lead_id = row['lead_id']
+            sf_integrator.update_lead(lead_id, row.to_dict())
+
+def main():
+    """Main entry point - choose automated or manual mode"""
+    if len(sys.argv) > 1 and sys.argv[1] == '--manual':
+        main_manual()
+    else:
+        main_automated()
+
+if __name__ == "__main__":
+    main()

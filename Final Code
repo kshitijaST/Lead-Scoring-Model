@@ -15,9 +15,8 @@ import base64
 from simple_salesforce import Salesforce
 from datetime import datetime
 
-warnings.filterwarnings('ignore')
+warnings.filterwarnings('ignore')                                               
 
-# Setup logging
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -33,7 +32,7 @@ class Config:
    
     SCORE_THRESHOLDS = {'hot': 80, 'warm': 60, 'cool': 40, 'cold': 0}
 
-# FIXED: Salesforce Integrator Class
+
 class SalesforceIntegrator:
     def __init__(self):
         self.sf = None
@@ -65,32 +64,29 @@ class SalesforceIntegrator:
             return pd.DataFrame()
             
         try:
-            # Get Lead object description to see available fields
             descri = self.sf.Lead.describe()
             field_list = [field['name'] for field in descri['fields']]
             
             print("Available Lead fields in Salesforce:")
-            for field in field_list[:20]:  # Show first 20 fields
+            for field in field_list[:20]:  
                 print(f"  - {field}")
             print(f"... and {len(field_list) - 20} more fields")
             
-            # Query leads from Salesforce with the 3 specified fields
             query = f"""
             SELECT 
                 CreatedDate,
                 Id,
                 Name
             FROM Lead 
-            LIMIT {limit}
+
             """
             
             print(f"Fetching {limit} leads from Salesforce...")
             results = self.sf.query_all(query)
             
             if results['totalSize'] > 0:
-                print(f"✅ Successfully fetched {results['totalSize']} leads from Salesforce!")
+                print(f" Successfully fetched {results['totalSize']} leads from Salesforce!")
                 
-                # Convert to DataFrame
                 leads_data = []
                 for record in results['records']:
                     lead_info = {
@@ -102,14 +98,13 @@ class SalesforceIntegrator:
                 
                 df = pd.DataFrame(leads_data)
                 
-                # Display the fetched data
-                print("\n📋 Fetched Salesforce Leads:")
+                print("\n Fetched Salesforce Leads:")
                 print("=" * 50)
                 print(df)
                 
                 return df
             else:
-                print("❌ No leads found in Salesforce.")
+                print(" No leads found in Salesforce.")
                 return pd.DataFrame()
                 
         except Exception as e:
@@ -123,7 +118,6 @@ class SalesforceIntegrator:
             return None
             
         try:
-            # FIXED: Convert all values to strings to avoid type mixing
             sf_updates = {
                 'AI_Score__c': str(updates.get('score')) if updates.get('score') is not None else None,
                 'AI_Category__c': str(updates.get('category')) if updates.get('category') is not None else None,
@@ -131,10 +125,8 @@ class SalesforceIntegrator:
                 'AI_Recommendation__c': str(updates.get('recommendation')) if updates.get('recommendation') is not None else None
             }
             
-            # Remove None values
             sf_updates = {k: v for k, v in sf_updates.items() if v is not None}
             
-            # FIXED: Ensure lead_id is string
             lead_id_str = str(lead_id)
             
             result = self.sf.Lead.update(lead_id_str, sf_updates)
@@ -157,16 +149,14 @@ class SalesforceIntegrator:
                 
             with open(image_path, 'rb') as f:
                 content = f.read()
-            
-            # FIXED: Use proper base64 encoding
+
             encoded_content = base64.b64encode(content).decode('utf-8')
             
-            # Create ContentVersion
             cv_data = {
                 'Title': title,
                 'PathOnClient': os.path.basename(image_path),
                 'VersionData': encoded_content,
-                'FirstPublishLocationId': str(lead_id)  # FIXED: Ensure string
+                'FirstPublishLocationId': str(lead_id)  
             }
             result = self.sf.ContentVersion.create(cv_data)
             logger.info(f"Attached image to Lead {lead_id}: {result}")
@@ -282,7 +272,6 @@ class LeadScoringAI:
     def preprocess_data(self, df, is_training=True):
         processed_df = df.copy()
        
-        # FIXED: Convert numeric columns from string to numeric if needed
         numeric_columns = ['website_visits', 'email_opens', 'time_on_site', 'pages_viewed', 
                           'form_submissions', 'email_click_rate', 'days_since_created', 
                           'has_demo_requested', 'content_downloads']
@@ -291,7 +280,7 @@ class LeadScoringAI:
             if col in processed_df.columns:
                 processed_df[col] = pd.to_numeric(processed_df[col], errors='coerce').fillna(0)
        
-        # Create engineered features
+        
         processed_df['engagement_score'] = (
             processed_df['website_visits'] * 0.3 +
             processed_df['email_opens'] * 0.2 +
@@ -309,7 +298,7 @@ class LeadScoringAI:
             processed_df['form_submissions'] * 3
         )
        
-        # FIXED: Handle categorical variables - only use columns that exist
+        
         categorical_cols = ['lead_source', 'company_size', 'industry', 'country']
         available_categorical_cols = [col for col in categorical_cols if col in processed_df.columns]
         
@@ -320,11 +309,11 @@ class LeadScoringAI:
             self.feature_columns = [col for col in processed_df.columns if col != 'converted']
        
         if not is_training and self.feature_columns is not None:
-            # Add missing columns with default value 0
+            
             for col in self.feature_columns:
                 if col not in processed_df.columns:
                     processed_df[col] = 0
-            # Ensure the columns are in the same order as during training
+            
             processed_df = processed_df[self.feature_columns]
        
         return processed_df
@@ -425,7 +414,7 @@ class LeadScoringAI:
        
         return roc_auc
    
-    def train(self, n_samples=1000, test_size=Config.TEST_SIZE):  # Reduced sample size for faster training
+    def train(self, n_samples=1000, test_size=Config.TEST_SIZE):  
         print("Training Lead Scoring Model...")
        
         df = self.data_simulator.generate_sample_data(n_samples)
@@ -438,7 +427,6 @@ class LeadScoringAI:
             X, y, test_size=test_size, random_state=Config.RANDOM_STATE, stratify=y
         )
        
-        # FIXED: Convert to numpy arrays to avoid scikit-learn compatibility issues
         X_train_values = X_train.values
         X_test_values = X_test.values
        
@@ -485,7 +473,6 @@ class LeadScoringAI:
        
         lead_processed = self.preprocess_data(lead_df, is_training=False)
         
-        # FIXED: Convert to numpy array to avoid scikit-learn compatibility issues
         lead_processed_values = lead_processed.values
         
         lead_scaled = self.scaler.transform(lead_processed_values)
@@ -519,11 +506,11 @@ class LeadScoringAI:
        
         results = []
         for i, (score, category) in enumerate(zip(scores, categories)):
-            # FIXED: Ensure lead_id is always string
+            
             lead_id = lead_data.iloc[i].get('Id') or lead_data.iloc[i].get('id') or lead_data.iloc[i].get('lead_id') or f"lead_{i+1}"
             result = {
-                'lead_id': str(lead_id),  # Convert to string
-                'score': int(score),      # Ensure integer
+                'lead_id': str(lead_id),  
+                'score': int(score),      
                 'category': str(category),
                 'priority': self._get_priority_level(category),
                 'recommendation': self._get_recommendation(category, score)
@@ -571,16 +558,16 @@ def main():
     print("LEAD SCORING AI - PREDICTIVE ANALYSIS WITH SALESFORCE INTEGRATION")
     print("=" * 70)
    
-    # Initialize Salesforce first to fetch real data
-    print("\n1. 🔐 CONNECTING TO SALESFORCE AND FETCHING REAL LEADS...")
+    
+    print("\n1.  CONNECTING TO SALESFORCE AND FETCHING REAL LEADS...")
     sf_integrator = SalesforceIntegrator()
     
-    # Fetch real leads from Salesforce
+    
     real_leads_df = sf_integrator.fetch_leads_from_salesforce(limit=5)
     
     if real_leads_df.empty:
-        print("❌ No real leads fetched from Salesforce. Using sample data instead.")
-        # Create sample leads for prediction
+        print(" No real leads fetched from Salesforce. Using sample data instead.")
+        
         sample_leads = [
             {
                 'id': '00Q5e000001A1B2C',
@@ -588,7 +575,7 @@ def main():
                 'lead_source': 'Website',
                 'company_size': 'Medium',
                 'industry': 'Technology',
-                'country': 'USA',  # Added country field
+                'country': 'USA',  
                 'website_visits': 15,
                 'email_opens': 12,
                 'time_on_site': 600,
@@ -605,7 +592,7 @@ def main():
                 'lead_source': 'Referral',
                 'company_size': 'Enterprise',
                 'industry': 'Finance',
-                'country': 'USA',  # Added country field
+                'country': 'USA',  
                 'website_visits': 8,
                 'email_opens': 6,
                 'time_on_site': 400,
@@ -619,16 +606,14 @@ def main():
         ]
         leads_to_analyze = sample_leads
     else:
-        print("✅ Using real Salesforce leads for analysis!")
-        # Convert Salesforce leads to the format expected by our model
-        # Since real leads don't have all the features, we'll add some simulated features for demo
+        print(" Using real Salesforce leads for analysis!")
+       
         leads_to_analyze = []
         for _, row in real_leads_df.iterrows():
             lead_data = {
                 'Id': row['Id'],
                 'Name': row['Name'],
                 'CreatedDate': row['CreatedDate'],
-                # Adding simulated features for demonstration
                 'lead_source': np.random.choice(['Website', 'Email', 'Social Media', 'Referral']),
                 'company_size': np.random.choice(['Small', 'Medium', 'Large']),
                 'industry': np.random.choice(['Technology', 'Finance', 'Healthcare']),
@@ -645,30 +630,28 @@ def main():
             }
             leads_to_analyze.append(lead_data)
     
-    # Initialize and train model
     ai_model = LeadScoringAI()
    
-    #Train the model
-    print("\n2. 🤖 TRAINING THE AI MODEL...")
+    print("\n2.  TRAINING THE AI MODEL...")
     try:
-        ai_model.train(n_samples=1000)  # Reduced for faster training
-        print("✅ Model training completed successfully!")
+        ai_model.train(n_samples=1000)  
+        print(" Model training completed successfully!")
     except Exception as e:
-        print(f"❌ Model training failed: {e}")
+        print(f" Model training failed: {e}")
         return
 
     
     # Analyze the leads
-    print("\n3. 🔍 ANALYZING LEADS...")
+    print("\n3.  ANALYZING LEADS...")
     try:
         results = ai_model.analyze_leads(leads_to_analyze)
-        print("✅ Lead analysis completed successfully!")
+        print(" Lead analysis completed successfully!")
     except Exception as e:
-        print(f"❌ Lead analysis failed: {e}")
+        print(f" Lead analysis failed: {e}")
         return
    
     # Display results
-    print("\n4. 📊 LEAD SCORING RESULTS:")
+    print("\n4.  LEAD SCORING RESULTS:")
     print("=" * 80)
     for _, result in results.iterrows():
         print(f"Lead ID: {result['lead_id']}")
@@ -678,8 +661,7 @@ def main():
         print(f" Action: {result['recommendation']}")
         print("-" * 50)
    
-    # Update Salesforce if connected and we have real leads
-    print("\n5. 🔄 UPDATING SALESFORCE...")
+    print("\n5.  UPDATING SALESFORCE...")
     success_count = 0
     if sf_integrator.sf and not real_leads_df.empty:
         for _, row in results.iterrows():
@@ -687,30 +669,29 @@ def main():
             update_result = sf_integrator.update_lead(lead_id, row.to_dict())
             if update_result:
                 success_count += 1
-                print(f"   ✅ Updated Lead: {lead_id}")
-        print(f"📊 Updated {success_count}/{len(results)} leads in Salesforce.")
+                print(f"    Updated Lead: {lead_id}")
+        print(f" Updated {success_count}/{len(results)} leads in Salesforce.")
     else:
-        print("   ⚠️  Salesforce not available or no real leads - skipping updates")
+        print("     Salesforce not available or no real leads - skipping updates")
     
-    # Show score distribution
-    print("\n6. 📈 VISUALIZING LEAD SCORES...")
+    print("\n6.  VISUALIZING LEAD SCORES...")
     try:
         all_scores = ai_model.predict_scores(leads_to_analyze)
         ai_model.plot_lead_score_distribution(all_scores)
-        print("✅ Visualization completed successfully!")
+        print(" Visualization completed successfully!")
     except Exception as e:
-        print(f"❌ Visualization failed: {e}")
+        print(f" Visualization failed: {e}")
    
-    # Save the model
-    print("\n7. 💾 SAVING THE MODEL...")
+
+    print("\n7. SAVING THE MODEL...")
     try:
         ai_model.save_model('lead_scoring_model.pkl')
-        print("✅ Model saved successfully!")
+        print(" Model saved successfully!")
     except Exception as e:
-        print(f"❌ Model save failed: {e}")
+        print(f" Model save failed: {e}")
    
     # Summary statistics
-    print("\n8. 📋 SUMMARY:")
+    print("\n8. SUMMARY:")
     print("=" * 30)
     category_counts = results['category'].value_counts()
     for category, count in category_counts.items():
@@ -719,7 +700,7 @@ def main():
     avg_score = results['score'].mean()
     print(f" Average Score: {avg_score:.1f}/100")
    
-    print("\n🎉 LEAD SCORING AI WITH SALESFORCE COMPLETED SUCCESSFULLY!")
+    print("\n LEAD SCORING AI WITH SALESFORCE COMPLETED SUCCESSFULLY!")
 
 if __name__ == "__main__":
     main()
